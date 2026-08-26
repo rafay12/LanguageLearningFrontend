@@ -37,13 +37,16 @@ export async function login(
     email: string,
     password: string,
 ): Promise<User> {
-    const result = await api<LoginResponse>("/auth/login", {
-        method: "POST",
-        body: JSON.stringify({
-            email,
-            password,
-        }),
-    });
+    const result = await api<LoginResponse>(
+        "/auth/login",
+        {
+            method: "POST",
+            body: JSON.stringify({
+                email,
+                password,
+            }),
+        },
+    );
 
     setToken(result.accessToken);
 
@@ -56,15 +59,18 @@ export async function register(
     username: string,
     name: string,
 ): Promise<User> {
-    const result = await api<RegisterResponse>("/auth/register", {
-        method: "POST",
-        body: JSON.stringify({
-            email,
-            password,
-            username,
-            name,
-        }),
-    });
+    const result = await api<RegisterResponse>(
+        "/auth/register",
+        {
+            method: "POST",
+            body: JSON.stringify({
+                email,
+                password,
+                username,
+                name,
+            }),
+        },
+    );
 
     setToken(result.accessToken);
 

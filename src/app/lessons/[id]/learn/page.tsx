@@ -2,50 +2,50 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
+import Link from "next/link";
 
 import { api } from "@/lib/api";
-import MultipleChoiceExercise from "@/components/learning/MultipleChoiceExercise";
+import ProtectedRoute from "@/components/ProtectedRoute";
 
 interface Lesson {
     id: number;
     title: string;
     description?: string | null;
     number?: number | null;
+    unitId: number;
 }
 
-interface Exercise {
+interface Vocabulary {
     id: number;
-    type?: string | null;
-    question?: string | null;
-    prompt?: string | null;
-    points: number;
-    number?: number | null;
-}
-
-interface ExerciseOption {
-    id: number;
-    text?: string | null;
-    label?: string | null;
-    value?: string | null;
-}
-
-interface SubmitResult {
-    exerciseId: number;
-    correct: boolean;
-    score: number;
-    maxScore: number;
-    correctAnswer?: string | null;
-    attemptId: number;
+    word: string;
+    translation: string;
+    pronunciation?: string | null;
+    example?: string | null;
 }
 
 interface LessonProgress {
     id?: number;
     lessonId: number;
+    userId?: number;
     status?: string | null;
     progress?: number | null;
     score?: number | null;
-    startedAt?: string | null;
     completedAt?: string | null;
+}
+
+interface User {
+    id: number;
+}
+
+type QuestionType =
+    | "translation"
+    | "multiple-choice";
+
+interface Question {
+    vocabulary: Vocabulary;
+    type: QuestionType;
+    options: string[];
+    answer: string;
 }
 
 export default function LessonLearnPage() {
@@ -54,51 +54,48 @@ export default function LessonLearnPage() {
 
     const lessonId = Number(params.id);
 
+    const [user, setUser] =
+        useState<User | null>(null);
+
     const [lesson, setLesson] =
         useState<Lesson | null>(null);
 
-    const [exercises, setExercises] =
-        useState<Exercise[]>([]);
-
-    const [options, setOptions] =
-        useState<ExerciseOption[]>([]);
-
-    const [lessonProgress, setLessonProgress] =
-        useState<LessonProgress | null>(null);
+    const [vocabulary, setVocabulary] =
+        useState<Vocabulary[]>([]);
 
     const [currentIndex, setCurrentIndex] =
         useState(0);
 
-    const [selectedOption, setSelectedOption] =
-        useState<number | null>(null);
+    const [answer, setAnswer] =
+        useState("");
 
-    const [result, setResult] =
-        useState<SubmitResult | null>(null);
+    const [selectedAnswer, setSelectedAnswer] =
+        useState<string | null>(null);
+
+    const [submitted, setSubmitted] =
+        useState(false);
+
+    const [correct, setCorrect] =
+        useState(false);
+
+    const [score, setScore] =
+        useState(0);
 
     const [loading, setLoading] =
         useState(true);
 
-    const [loadingOptions, setLoadingOptions] =
-        useState(false);
-
-    const [submitting, setSubmitting] =
-        useState(false);
-
-    const [starting, setStarting] =
-        useState(false);
-
-    const [completed, setCompleted] =
+    const [saving, setSaving] =
         useState(false);
 
     const [error, setError] =
         useState("");
 
-    const currentExercise =
-        exercises[currentIndex];
+    const [completed, setCompleted] =
+        useState(false);
 
     useEffect(() => {
         if (!Number.isFinite(lessonId)) {
-            setError("Invalid lesson ID.");
+            setError("Invalid lesson.");
             setLoading(false);
             return;
         }
@@ -110,59 +107,58 @@ export default function LessonLearnPage() {
 
                 const [
                     lessonData,
-                    exerciseData,
+                    currentUser,
                 ] = await Promise.all([
                     api<Lesson>(
                         `/lessons/${lessonId}`,
                     ),
-                    api<Exercise[]>(
-                        `/exercises/lesson/${lessonId}`,
-                    ),
+                    api<User>("/auth/me"),
                 ]);
 
                 setLesson(lessonData);
-                setExercises(exerciseData);
+                setUser(currentUser);
 
                 /*
-                 * Load existing progress.
+                 * Load vocabulary belonging to
+                 * this lesson.
+                 *
+                 * Adjust the endpoint here if your
+                 * backend uses another route.
+                 */
+                const vocabularyData =
+                    await api<Vocabulary[]>(
+                        `/vocabulary/lesson/${lessonId}`,
+                    );
+
+                setVocabulary(
+                    vocabularyData,
+                );
+
+                /*
+                 * Load existing lesson progress.
+                 * If the lesson was previously completed,
+                 * start from the beginning but preserve
+                 * the completed state.
                  */
                 try {
                     const progress =
-                        await api<LessonProgress[]>(
-                            `/lesson-progress/lesson/${lessonId}`,
+                        await api<LessonProgress>(
+                            `/lesson-progress/user/${currentUser.id}/lesson/${lessonId}`,
                         );
 
-                    /*
-                     * The endpoint is not user-filtered.
-                     * We try to find the current user's
-                     * record by asking /auth/me.
-                     */
-                    try {
-                        const user =
-                            await api<{ id: number }>(
-                                "/auth/me",
-                            );
-
-                        const current =
-                            progress.find(
-                                (item) =>
-                                    (
-                                        item as LessonProgress & {
-                                            userId?: number;
-                                        }
-                                    ).userId === user.id,
-                            );
-
-                        if (current) {
-                            setLessonProgress(current);
-                        }
-                    } catch {
-                        /*
-                         * Progress is optional for rendering.
-                         */
+                    if (
+                        progress?.status ===
+                        "COMPLETED" ||
+                        progress?.completedAt
+                    ) {
+                        setScore(
+                            Number(
+                                progress.score ?? 0,
+                            ),
+                        );
                     }
                 } catch {
-                    setLessonProgress(null);
+                    // No previous progress.
                 }
             } catch (err) {
                 console.error(err);
@@ -180,516 +176,665 @@ export default function LessonLearnPage() {
         loadLesson();
     }, [lessonId]);
 
-    useEffect(() => {
-        if (!currentExercise) {
+    const currentVocabulary =
+        vocabulary[currentIndex];
+
+    const question = useMemo<Question | null>(() => {
+        if (!currentVocabulary) {
+            return null;
+        }
+
+        /*
+         * Every third question becomes
+         * multiple choice.
+         */
+        const isMultipleChoice =
+            currentIndex % 3 === 2;
+
+        if (!isMultipleChoice) {
+            return {
+                vocabulary:
+                currentVocabulary,
+                type: "translation",
+                options: [],
+                answer:
+                currentVocabulary.translation,
+            };
+        }
+
+        const otherWords =
+            vocabulary
+                .filter(
+                    (item) =>
+                        item.id !==
+                        currentVocabulary.id,
+                )
+                .map(
+                    (item) =>
+                        item.translation,
+                )
+                .filter(Boolean);
+
+        const randomOptions =
+            [...otherWords]
+                .sort(
+                    () =>
+                        Math.random() -
+                        0.5,
+                )
+                .slice(0, 3);
+
+        const options = [
+            currentVocabulary.translation,
+            ...randomOptions,
+        ].sort(
+            () =>
+                Math.random() -
+                0.5,
+        );
+
+        return {
+            vocabulary:
+            currentVocabulary,
+            type: "multiple-choice",
+            options,
+            answer:
+            currentVocabulary.translation,
+        };
+    }, [
+        currentVocabulary,
+        currentIndex,
+        vocabulary,
+    ]);
+
+    const progressPercent =
+        vocabulary.length > 0
+            ? Math.round(
+                (currentIndex /
+                    vocabulary.length) *
+                100,
+            )
+            : 0;
+
+    function normalize(value: string) {
+        return value
+            .trim()
+            .toLowerCase()
+            .normalize("NFD")
+            .replace(
+                /[\u0300-\u036f]/g,
+                "",
+            );
+    }
+
+    function submitAnswer() {
+        if (!question || submitted) {
             return;
         }
 
-        async function loadOptions() {
-            try {
-                setLoadingOptions(true);
-                setOptions([]);
-                setSelectedOption(null);
-                setResult(null);
-                setError("");
+        const userAnswer =
+            question.type ===
+            "multiple-choice"
+                ? selectedAnswer ?? ""
+                : answer;
 
-                const data =
-                    await api<ExerciseOption[]>(
-                        `/exercises/${currentExercise.id}/options`,
-                    );
-
-                setOptions(data);
-            } catch (err) {
-                console.error(err);
-
-                setOptions([]);
-
-                setError(
-                    err instanceof Error
-                        ? err.message
-                        : "Unable to load exercise options.",
-                );
-            } finally {
-                setLoadingOptions(false);
-            }
+        if (!userAnswer.trim()) {
+            return;
         }
 
-        loadOptions();
-    }, [currentExercise]);
+        const isCorrect =
+            normalize(userAnswer) ===
+            normalize(question.answer);
 
-    async function startLesson() {
-        if (starting) {
+        setCorrect(isCorrect);
+
+        if (isCorrect) {
+            setScore(
+                (current) =>
+                    current + 1,
+            );
+        }
+
+        setSubmitted(true);
+    }
+
+    async function saveProgress(
+        percent: number,
+        finalScore: number,
+        status: string,
+    ) {
+        if (!user) {
             return;
         }
 
         try {
-            setStarting(true);
-            setError("");
+            setSaving(true);
 
-            const progress =
-                await api<LessonProgress>(
-                    `/lesson-progress/${lessonId}/start`,
-                    {
-                        method: "POST",
-                    },
-                );
-
-            setLessonProgress(progress);
+            await api(
+                "/lesson-progress",
+                {
+                    method: "POST",
+                    body: JSON.stringify({
+                        userId: user.id,
+                        lessonId,
+                        progress: percent,
+                        score: finalScore,
+                        status,
+                        ...(status ===
+                        "COMPLETED"
+                            ? {
+                                completedAt:
+                                    new Date().toISOString(),
+                            }
+                            : {}),
+                    }),
+                },
+            );
         } catch (err) {
-            console.error(err);
-
-            setError(
-                err instanceof Error
-                    ? err.message
-                    : "Unable to start lesson.",
+            console.error(
+                "Could not save progress:",
+                err,
             );
         } finally {
-            setStarting(false);
+            setSaving(false);
         }
     }
 
-    async function submitAnswer() {
-        if (
-            !currentExercise ||
-            selectedOption === null ||
-            submitting
-        ) {
-            return;
-        }
-
-        const selected =
-            options.find(
-                (option) =>
-                    option.id === selectedOption,
-            );
-
-        if (!selected) {
-            setError("Selected answer was not found.");
-            return;
-        }
-
-        const answer =
-            selected.text ??
-            selected.label ??
-            selected.value ??
-            "";
-
-        if (!answer.trim()) {
-            setError("This option does not contain an answer.");
-            return;
-        }
-
-        try {
-            setSubmitting(true);
-            setError("");
-
-            /*
-             * Your backend currently compares dto.answer
-             * with Exercise.answer, so we submit the
-             * selected option's text.
-             */
-            const submission =
-                await api<SubmitResult>(
-                    `/exercises/${currentExercise.id}/submit`,
-                    {
-                        method: "POST",
-                        body: JSON.stringify({
-                            answer,
-                        }),
-                    },
-                );
-
-            setResult(submission);
-
-            /*
-             * Don't automatically move to the next question.
-             * Let the learner see the result first.
-             */
-        } catch (err) {
-            console.error(err);
-
-            setError(
-                err instanceof Error
-                    ? err.message
-                    : "Unable to submit answer.",
-            );
-        } finally {
-            setSubmitting(false);
-        }
-    }
-
-    async function continueToNextExercise() {
-        if (!result) {
+    async function nextQuestion() {
+        if (!submitted) {
             return;
         }
 
         const nextIndex =
             currentIndex + 1;
 
-        /*
-         * Last exercise.
-         */
-        if (nextIndex >= exercises.length) {
-            if (result.correct) {
-                try {
-                    await api(
-                        `/lesson-progress/${lessonId}/complete`,
-                        {
-                            method: "POST",
-                        },
-                    );
+        if (
+            nextIndex >=
+            vocabulary.length
+        ) {
+            const finalScore =
+                score;
 
-                    setCompleted(true);
-                } catch (err) {
-                    console.error(err);
+            await saveProgress(
+                100,
+                finalScore,
+                "COMPLETED",
+            );
 
-                    setError(
-                        err instanceof Error
-                            ? err.message
-                            : "Unable to complete lesson.",
-                    );
-                }
-            }
-
+            setCompleted(true);
             return;
         }
 
-        /*
-         * Save lesson progress.
-         */
-        try {
-            const progress =
-                Math.round(
-                    (nextIndex /
-                        exercises.length) *
-                    100,
-                );
+        const percent =
+            Math.round(
+                (nextIndex /
+                    vocabulary.length) *
+                100,
+            );
 
-            const updated =
-                await api<LessonProgress>(
-                    `/lesson-progress/${lessonId}/progress`,
-                    {
-                        method: "POST",
-                        body: JSON.stringify({
-                            progress,
-                            score: result.score,
-                        }),
-                    },
-                );
+        await saveProgress(
+            percent,
+            score,
+            "IN_PROGRESS",
+        );
 
-            setLessonProgress(updated);
-        } catch (err) {
-            console.error(err);
-        }
+        setCurrentIndex(
+            nextIndex,
+        );
 
-        setCurrentIndex(nextIndex);
+        setAnswer("");
+        setSelectedAnswer(null);
+        setSubmitted(false);
+        setCorrect(false);
     }
 
-    const progressPercentage = useMemo(() => {
-        if (!exercises.length) {
-            return 0;
-        }
-
-        if (lessonProgress?.progress != null) {
-            return Math.min(
-                100,
-                Math.max(
-                    0,
-                    lessonProgress.progress,
-                ),
-            );
-        }
-
-        return Math.round(
-            (currentIndex /
-                exercises.length) *
-            100,
+    async function exitLesson() {
+        await saveProgress(
+            progressPercent,
+            score,
+            "IN_PROGRESS",
         );
-    }, [
-        currentIndex,
-        exercises.length,
-        lessonProgress?.progress,
-    ]);
+
+        router.push(
+            `/courses/${lesson?.unitId ?? ""}`,
+        );
+    }
 
     if (loading) {
         return (
-            <main className="flex min-h-screen items-center justify-center bg-zinc-50">
-                <p className="text-sm text-zinc-500">
-                    Loading lesson...
-                </p>
-            </main>
+            <ProtectedRoute>
+                <main className="flex min-h-screen items-center justify-center bg-zinc-50">
+                    <div className="text-center">
+                        <div className="mx-auto h-9 w-9 animate-spin rounded-full border-2 border-zinc-300 border-t-zinc-900" />
+
+                        <p className="mt-4 text-sm text-zinc-500">
+                            Loading lesson...
+                        </p>
+                    </div>
+                </main>
+            </ProtectedRoute>
+        );
+    }
+
+    if (error || !lesson) {
+        return (
+            <ProtectedRoute>
+                <main className="flex min-h-screen items-center justify-center bg-zinc-50 px-6">
+                    <div className="w-full max-w-md rounded-3xl border border-zinc-200 bg-white p-8 text-center">
+                        <h1 className="text-xl font-bold">
+                            Unable to load lesson
+                        </h1>
+
+                        <p className="mt-2 text-sm text-zinc-500">
+                            {error}
+                        </p>
+
+                        <button
+                            type="button"
+                            onClick={() =>
+                                router.back()
+                            }
+                            className="mt-6 rounded-xl bg-zinc-900 px-5 py-3 text-sm font-semibold text-white"
+                        >
+                            Go back
+                        </button>
+                    </div>
+                </main>
+            </ProtectedRoute>
+        );
+    }
+
+    if (vocabulary.length === 0) {
+        return (
+            <ProtectedRoute>
+                <main className="min-h-screen bg-zinc-50">
+                    <header className="border-b border-zinc-200 bg-white">
+                        <div className="mx-auto flex h-16 max-w-4xl items-center justify-between px-6">
+                            <Link
+                                href="/dashboard"
+                                className="text-sm font-medium text-zinc-500"
+                            >
+                                ← Dashboard
+                            </Link>
+                        </div>
+                    </header>
+
+                    <div className="mx-auto max-w-2xl px-6 py-16 text-center">
+                        <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-zinc-100 text-2xl">
+                            📚
+                        </div>
+
+                        <h1 className="mt-6 text-2xl font-bold">
+                            No vocabulary yet
+                        </h1>
+
+                        <p className="mt-2 text-zinc-500">
+                            This lesson doesn't have
+                            any vocabulary yet.
+                        </p>
+
+                        <Link
+                            href="/dashboard"
+                            className="mt-7 inline-flex rounded-xl bg-zinc-900 px-6 py-3 text-sm font-semibold text-white"
+                        >
+                            Back to dashboard
+                        </Link>
+                    </div>
+                </main>
+            </ProtectedRoute>
         );
     }
 
     if (completed) {
+        const finalPercentage =
+            vocabulary.length > 0
+                ? Math.round(
+                    (score /
+                        vocabulary.length) *
+                    100,
+                )
+                : 0;
+
         return (
-            <main className="flex min-h-screen items-center justify-center bg-zinc-50 px-6">
-                <div className="w-full max-w-lg rounded-3xl border border-zinc-200 bg-white p-10 text-center shadow-sm">
-                    <div className="mx-auto flex h-20 w-20 items-center justify-center rounded-full bg-zinc-900 text-3xl text-white">
-                        ✓
+            <ProtectedRoute>
+                <main className="flex min-h-screen items-center justify-center bg-zinc-50 px-6">
+                    <div className="w-full max-w-lg rounded-3xl border border-zinc-200 bg-white p-8 text-center shadow-sm sm:p-10">
+                        <div className="mx-auto flex h-20 w-20 items-center justify-center rounded-full bg-zinc-900 text-3xl text-white">
+                            ✓
+                        </div>
+
+                        <p className="mt-7 text-xs font-semibold uppercase tracking-widest text-zinc-400">
+                            Lesson complete
+                        </p>
+
+                        <h1 className="mt-2 text-3xl font-bold">
+                            Great work!
+                        </h1>
+
+                        <p className="mt-3 text-zinc-500">
+                            You completed{" "}
+                            {lesson.title}.
+                        </p>
+
+                        <div className="mt-8 grid grid-cols-2 gap-4">
+                            <div className="rounded-2xl bg-zinc-50 p-5">
+                                <p className="text-3xl font-bold">
+                                    {
+                                        finalPercentage
+                                    }
+                                    %
+                                </p>
+
+                                <p className="mt-1 text-xs text-zinc-400">
+                                    Score
+                                </p>
+                            </div>
+
+                            <div className="rounded-2xl bg-zinc-50 p-5">
+                                <p className="text-3xl font-bold">
+                                    {
+                                        vocabulary.length
+                                    }
+                                </p>
+
+                                <p className="mt-1 text-xs text-zinc-400">
+                                    Words
+                                </p>
+                            </div>
+                        </div>
+
+                        <div className="mt-8 flex flex-col gap-3 sm:flex-row">
+                            <Link
+                                href="/dashboard"
+                                className="flex-1 rounded-xl border border-zinc-200 px-5 py-3 text-sm font-semibold"
+                            >
+                                Dashboard
+                            </Link>
+
+                            <button
+                                type="button"
+                                onClick={() =>
+                                    window.location.reload()
+                                }
+                                className="flex-1 rounded-xl bg-zinc-900 px-5 py-3 text-sm font-semibold text-white"
+                            >
+                                Practice again
+                            </button>
+                        </div>
                     </div>
-
-                    <p className="mt-6 text-sm font-medium uppercase tracking-wider text-zinc-400">
-                        Lesson complete
-                    </p>
-
-                    <h1 className="mt-2 text-3xl font-bold">
-                        {lesson?.title ?? "Well done!"}
-                    </h1>
-
-                    <p className="mt-3 text-zinc-500">
-                        You've completed all the exercises
-                        in this lesson.
-                    </p>
-
-                    <button
-                        type="button"
-                        onClick={() =>
-                            router.back()
-                        }
-                        className="mt-8 w-full rounded-2xl bg-zinc-900 px-6 py-4 font-semibold text-white transition hover:bg-zinc-800"
-                    >
-                        Back to course
-                    </button>
-                </div>
-            </main>
+                </main>
+            </ProtectedRoute>
         );
     }
 
-    if (!lesson) {
-        return (
-            <main className="flex min-h-screen items-center justify-center bg-zinc-50 px-6">
-                <div className="rounded-2xl border border-red-200 bg-red-50 p-6 text-red-700">
-                    Lesson not found.
-                </div>
-            </main>
-        );
+    if (!question) {
+        return null;
     }
-
-    if (exercises.length === 0) {
-        return (
-            <main className="flex min-h-screen items-center justify-center bg-zinc-50 px-6">
-                <div className="w-full max-w-lg rounded-3xl border border-zinc-200 bg-white p-10 text-center">
-                    <h1 className="text-2xl font-bold">
-                        No exercises yet
-                    </h1>
-
-                    <p className="mt-3 text-sm text-zinc-500">
-                        This lesson doesn't have any exercises.
-                    </p>
-
-                    <button
-                        type="button"
-                        onClick={() =>
-                            router.back()
-                        }
-                        className="mt-8 rounded-xl bg-zinc-900 px-6 py-3 font-semibold text-white"
-                    >
-                        Go back
-                    </button>
-                </div>
-            </main>
-        );
-    }
-
-    const question =
-        currentExercise.question ??
-        currentExercise.prompt ??
-        "Answer the question";
-
-    const hasResult =
-        result !== null;
 
     return (
-        <main className="min-h-screen bg-zinc-50 text-zinc-900">
-            <header className="border-b border-zinc-200 bg-white">
-                <div className="mx-auto flex h-16 max-w-4xl items-center gap-5 px-6">
-                    <button
-                        type="button"
-                        onClick={() =>
-                            router.back()
-                        }
-                        className="text-xl text-zinc-400 transition hover:text-zinc-900"
-                        aria-label="Exit lesson"
-                    >
-                        ×
-                    </button>
+        <ProtectedRoute>
+            <main className="min-h-screen bg-zinc-50 text-zinc-900">
+                {/* Header */}
+                <header className="border-b border-zinc-200 bg-white">
+                    <div className="mx-auto max-w-3xl px-6">
+                        <div className="flex h-16 items-center gap-5">
+                            <button
+                                type="button"
+                                onClick={
+                                    exitLesson
+                                }
+                                className="text-zinc-400 transition hover:text-zinc-900"
+                            >
+                                ×
+                            </button>
 
-                    <div className="h-2 flex-1 overflow-hidden rounded-full bg-zinc-100">
-                        <div
-                            className="h-full rounded-full bg-zinc-900 transition-all duration-300"
-                            style={{
-                                width: `${progressPercentage}%`,
-                            }}
-                        />
-                    </div>
+                            <div className="flex-1">
+                                <div className="flex items-center justify-between text-xs">
+                                    <span className="font-medium text-zinc-500">
+                                        {
+                                            lesson.title
+                                        }
+                                    </span>
 
-                    <span className="whitespace-nowrap text-sm font-medium text-zinc-500">
-                        {currentIndex + 1} /{" "}
-                        {exercises.length}
-                    </span>
-                </div>
-            </header>
+                                    <span className="text-zinc-400">
+                                        {currentIndex +
+                                            1}{" "}
+                                        /{" "}
+                                        {
+                                            vocabulary.length
+                                        }
+                                    </span>
+                                </div>
 
-            <div className="mx-auto max-w-3xl px-6 py-10">
-                <div className="mb-8">
-                    <p className="text-xs font-semibold uppercase tracking-wider text-zinc-400">
-                        {lesson.title}
-                    </p>
+                                <div className="mt-2 h-2 overflow-hidden rounded-full bg-zinc-100">
+                                    <div
+                                        className="h-full rounded-full bg-zinc-900 transition-all duration-300"
+                                        style={{
+                                            width: `${Math.max(
+                                                3,
+                                                progressPercent,
+                                            )}%`,
+                                        }}
+                                    />
+                                </div>
+                            </div>
 
-                    <p className="mt-2 text-sm text-zinc-500">
-                        {progressPercentage}% complete
-                    </p>
-                </div>
-
-                <div className="rounded-3xl border border-zinc-200 bg-white p-8 shadow-sm sm:p-10">
-                    <div className="flex items-center justify-between">
-                        <span className="rounded-full bg-zinc-100 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-zinc-600">
-                            {currentExercise.type ??
-                                "Exercise"}
-                        </span>
-
-                        <span className="text-sm text-zinc-400">
-                            {currentExercise.points}{" "}
-                            point
-                            {currentExercise.points === 1
-                                ? ""
-                                : "s"}
-                        </span>
-                    </div>
-
-                    {loadingOptions ? (
-                        <div className="mt-10">
-                            <p className="text-zinc-500">
-                                Loading question...
-                            </p>
+                            <span className="text-sm font-semibold">
+                                {score} pts
+                            </span>
                         </div>
-                    ) : options.length > 0 ? (
-                        <div className="mt-8">
-                            <MultipleChoiceExercise
-                                question={question}
-                                options={options.map(
-                                    (option) => ({
-                                        id: option.id,
-                                        text:
-                                            option.text ??
-                                            option.label ??
-                                            option.value ??
-                                            "",
-                                    }),
+                    </div>
+                </header>
+
+                {/* Question */}
+                <div className="mx-auto max-w-2xl px-6 py-10 sm:py-16">
+                    <div className="text-center">
+                        <p className="text-xs font-semibold uppercase tracking-widest text-zinc-400">
+                            {question.type ===
+                            "multiple-choice"
+                                ? "Choose the translation"
+                                : "Translate this word"}
+                        </p>
+
+                        <div className="mt-8 rounded-3xl border border-zinc-200 bg-white p-8 shadow-sm sm:p-12">
+                            <p className="text-4xl font-bold tracking-tight sm:text-5xl">
+                                {
+                                    question
+                                        .vocabulary
+                                        .word
+                                }
+                            </p>
+
+                            {question
+                                .vocabulary
+                                .pronunciation && (
+                                <p className="mt-4 text-sm text-zinc-400">
+                                    {
+                                        question
+                                            .vocabulary
+                                            .pronunciation
+                                    }
+                                </p>
+                            )}
+
+                            {question
+                                .vocabulary
+                                .example && (
+                                <p className="mx-auto mt-7 max-w-md text-sm italic leading-6 text-zinc-500">
+                                    "
+                                    {
+                                        question
+                                            .vocabulary
+                                            .example
+                                    }
+                                    "
+                                </p>
+                            )}
+                        </div>
+                    </div>
+
+                    {/* Answer */}
+                    <div className="mt-8">
+                        {question.type ===
+                        "multiple-choice" ? (
+                            <div className="space-y-3">
+                                {question.options.map(
+                                    (
+                                        option,
+                                    ) => {
+                                        const isSelected =
+                                            selectedAnswer ===
+                                            option;
+
+                                        const isCorrectOption =
+                                            submitted &&
+                                            option ===
+                                            question.answer;
+
+                                        const isWrongSelection =
+                                            submitted &&
+                                            isSelected &&
+                                            !correct;
+
+                                        return (
+                                            <button
+                                                key={
+                                                    option
+                                                }
+                                                type="button"
+                                                disabled={
+                                                    submitted
+                                                }
+                                                onClick={() =>
+                                                    setSelectedAnswer(
+                                                        option,
+                                                    )
+                                                }
+                                                className={[
+                                                    "w-full rounded-2xl border p-4 text-left font-medium transition",
+                                                    isCorrectOption
+                                                        ? "border-zinc-900 bg-zinc-900 text-white"
+                                                        : isWrongSelection
+                                                            ? "border-red-300 bg-red-50 text-red-700"
+                                                            : isSelected
+                                                                ? "border-zinc-900 bg-zinc-100"
+                                                                : "border-zinc-200 bg-white hover:border-zinc-400",
+                                                ].join(
+                                                    " ",
+                                                )}
+                                            >
+                                                {
+                                                    option
+                                                }
+                                            </button>
+                                        );
+                                    },
                                 )}
-                                selectedOption={
-                                    selectedOption
+                            </div>
+                        ) : (
+                            <input
+                                type="text"
+                                value={answer}
+                                onChange={(
+                                    event,
+                                ) =>
+                                    setAnswer(
+                                        event
+                                            .target
+                                            .value,
+                                    )
                                 }
-                                disabled={hasResult}
-                                onSelect={
-                                    setSelectedOption
+                                onKeyDown={(
+                                    event,
+                                ) => {
+                                    if (
+                                        event.key ===
+                                        "Enter" &&
+                                        !submitted
+                                    ) {
+                                        submitAnswer();
+                                    }
+                                }}
+                                disabled={
+                                    submitted
                                 }
+                                placeholder="Type your answer..."
+                                className="w-full rounded-2xl border border-zinc-200 bg-white px-5 py-4 text-lg outline-none transition placeholder:text-zinc-300 focus:border-zinc-900"
+                                autoFocus
                             />
-                        </div>
-                    ) : (
-                        <div className="mt-8">
-                            <h1 className="text-3xl font-bold">
-                                {question}
-                            </h1>
+                        )}
+                    </div>
 
-                            <p className="mt-4 text-sm text-zinc-500">
-                                This exercise does not
-                                currently have selectable
-                                options.
-                            </p>
-                        </div>
-                    )}
-
-                    {error && (
-                        <div className="mt-6 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">
-                            {error}
-                        </div>
-                    )}
-
-                    {result && (
+                    {/* Result */}
+                    {submitted && (
                         <div
                             className={[
-                                "mt-8 rounded-2xl border p-5",
-                                result.correct
-                                    ? "border-zinc-200 bg-zinc-50"
-                                    : "border-red-200 bg-red-50",
+                                "mt-5 rounded-2xl p-5",
+                                correct
+                                    ? "bg-zinc-900 text-white"
+                                    : "bg-red-50 text-red-800",
                             ].join(" ")}
                         >
-                            <p className="text-lg font-bold">
-                                {result.correct
-                                    ? "Correct!"
+                            <p className="font-bold">
+                                {correct
+                                    ? "Correct! 🎉"
                                     : "Not quite."}
                             </p>
 
-                            <p className="mt-2 text-sm text-zinc-600">
-                                You earned{" "}
-                                <span className="font-semibold">
-                                    {result.score}
-                                </span>{" "}
-                                of{" "}
-                                <span className="font-semibold">
-                                    {result.maxScore}
-                                </span>{" "}
-                                points.
-                            </p>
-
-                            {!result.correct &&
-                                result.correctAnswer && (
-                                    <p className="mt-3 text-sm text-zinc-600">
-                                        Correct answer:{" "}
-                                        <span className="font-semibold">
-                                            {
-                                                result.correctAnswer
-                                            }
-                                        </span>
-                                    </p>
-                                )}
+                            {!correct && (
+                                <p className="mt-1 text-sm opacity-80">
+                                    Correct answer:{" "}
+                                    <strong>
+                                        {
+                                            question.answer
+                                        }
+                                    </strong>
+                                </p>
+                            )}
                         </div>
                     )}
 
-                    {!hasResult ? (
-                        <button
-                            type="button"
-                            onClick={submitAnswer}
-                            disabled={
-                                selectedOption ===
-                                null ||
-                                submitting ||
-                                loadingOptions
-                            }
-                            className="mt-10 w-full rounded-2xl bg-zinc-900 px-6 py-4 font-semibold text-white transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-40"
-                        >
-                            {submitting
-                                ? "Checking..."
-                                : "Check answer"}
-                        </button>
-                    ) : result.correct ? (
-                        <button
-                            type="button"
-                            onClick={
-                                continueToNextExercise
-                            }
-                            className="mt-10 w-full rounded-2xl bg-zinc-900 px-6 py-4 font-semibold text-white transition hover:bg-zinc-800"
-                        >
-                            {currentIndex ===
-                            exercises.length - 1
-                                ? "Finish lesson"
-                                : "Continue"}
-                        </button>
-                    ) : (
-                        <button
-                            type="button"
-                            onClick={
-                                continueToNextExercise
-                            }
-                            className="mt-10 w-full rounded-2xl bg-zinc-900 px-6 py-4 font-semibold text-white transition hover:bg-zinc-800"
-                        >
-                            Continue
-                        </button>
-                    )}
+                    {/* Action */}
+                    <div className="mt-6">
+                        {!submitted ? (
+                            <button
+                                type="button"
+                                onClick={
+                                    submitAnswer
+                                }
+                                disabled={
+                                    question.type ===
+                                    "multiple-choice"
+                                        ? !selectedAnswer
+                                        : !answer.trim()
+                                }
+                                className="w-full rounded-2xl bg-zinc-900 px-6 py-4 font-semibold text-white transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-40"
+                            >
+                                Check answer
+                            </button>
+                        ) : (
+                            <button
+                                type="button"
+                                onClick={
+                                    nextQuestion
+                                }
+                                disabled={
+                                    saving
+                                }
+                                className="w-full rounded-2xl bg-zinc-900 px-6 py-4 font-semibold text-white transition hover:bg-zinc-800 disabled:opacity-50"
+                            >
+                                {saving
+                                    ? "Saving..."
+                                    : currentIndex +
+                                    1 >=
+                                    vocabulary.length
+                                        ? "Finish lesson"
+                                        : "Continue →"}
+                            </button>
+                        )}
+                    </div>
                 </div>
-            </div>
-        </main>
+            </main>
+        </ProtectedRoute>
     );
 }

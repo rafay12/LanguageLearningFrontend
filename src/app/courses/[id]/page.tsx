@@ -1,24 +1,18 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
+import Link from "next/link";
+
 import { api } from "@/lib/api";
+import ProtectedRoute from "@/components/ProtectedRoute";
 
 interface Course {
     id: number;
     title: string;
     description?: string | null;
-    type?: string | null;
-    number?: number | null;
-    isActive?: boolean;
-}
-
-interface Lesson {
-    id: number;
-    title: string;
-    description?: string | null;
-    number?: number | null;
-    isActive?: boolean;
+    level?: string | null;
+    variantId?: number | null;
 }
 
 interface Unit {
@@ -26,175 +20,155 @@ interface Unit {
     title: string;
     description?: string | null;
     number?: number | null;
-    isActive?: boolean;
-    lessons: Lesson[];
+    courseId: number;
+}
+
+interface Lesson {
+    id: number;
+    title: string;
+    description?: string | null;
+    number?: number | null;
+    unitId: number;
 }
 
 interface LessonProgress {
     id?: number;
     lessonId: number;
+    userId?: number;
     status?: string | null;
     progress?: number | null;
     score?: number | null;
-    startedAt?: string;
-    completedAt?: string;
+    completedAt?: string | null;
 }
 
-interface EnrollmentStatus {
-    enrolled: boolean;
-}
-
-interface CourseProgress {
-    courseId: number;
-    totalLessons: number;
-    completedLessons: number;
-    progress: number;
+interface UnitWithLessons extends Unit {
+    lessons: Lesson[];
 }
 
 export default function CoursePage() {
     const params = useParams();
     const router = useRouter();
 
-    const courseId = params.id as string;
+    const courseId = Number(params.id);
 
-    const [course, setCourse] = useState<Course | null>(null);
-    const [units, setUnits] = useState<Unit[]>([]);
-    const [lessonProgress, setLessonProgress] = useState<
-        LessonProgress[]
-    >([]);
+    const [course, setCourse] =
+        useState<Course | null>(null);
 
-    const [courseProgress, setCourseProgress] =
-        useState<CourseProgress | null>(null);
+    const [units, setUnits] =
+        useState<UnitWithLessons[]>([]);
 
-    const [enrolled, setEnrolled] = useState(false);
-    const [enrolling, setEnrolling] = useState(false);
+    const [progress, setProgress] =
+        useState<LessonProgress[]>([]);
 
-    const [loading, setLoading] = useState(true);
-    const [progressLoading, setProgressLoading] =
-        useState(false);
+    const [loading, setLoading] =
+        useState(true);
 
-    const [error, setError] = useState("");
+    const [error, setError] =
+        useState("");
+
+    const [expandedUnits, setExpandedUnits] =
+        useState<Record<number, boolean>>({});
 
     useEffect(() => {
+        if (!Number.isFinite(courseId)) {
+            setError("Invalid course.");
+            setLoading(false);
+            return;
+        }
+
         async function loadCourse() {
             try {
                 setLoading(true);
                 setError("");
 
-                /*
-                 * Load course and units.
-                 */
-                const [courseData, unitsData] = await Promise.all([
-                    api<Course>(`/courses/${courseId}`),
-                    api<Unit[]>(`/units/course/${courseId}`),
-                ]);
-
-                /*
-                 * Load lessons for every unit.
-                 */
-                const unitsWithLessons = await Promise.all(
-                    unitsData.map(async (unit) => {
-                        const lessons = await api<Lesson[]>(
-                            `/lessons/unit/${unit.id}`,
-                        );
-
-                        return {
-                            ...unit,
-                            lessons,
-                        };
-                    }),
-                );
-
-                setCourse(courseData);
-                setUnits(unitsWithLessons);
-
-                /*
-                 * Load authenticated user's information.
-                 */
-                try {
-                    setProgressLoading(true);
-
-                    const userData = await api<{
-                        id: number;
-                    }>("/auth/me");
-
-                    /*
-                     * Load lesson progress.
-                     */
-                    try {
-                        const progress =
-                            await api<LessonProgress[]>(
-                                `/lesson-progress/user/${userData.id}`,
-                            );
-
-                        setLessonProgress(progress);
-                    } catch (progressError) {
-                        console.error(
-                            "Unable to load lesson progress:",
-                            progressError,
-                        );
-
-                        setLessonProgress([]);
-                    }
-
-                    /*
-                     * Check whether the user is enrolled.
-                     */
-                    try {
-                        const enrollment =
-                            await api<EnrollmentStatus>(
-                                `/enrollments/check?userId=${userData.id}&courseId=${courseId}`,
-                            );
-
-                        setEnrolled(enrollment.enrolled);
-
-                        /*
-                         * Only request course progress if
-                         * the user is actually enrolled.
-                         */
-                        if (enrollment.enrolled) {
-                            try {
-                                const progress =
-                                    await api<CourseProgress>(
-                                        `/enrollments/progress?courseId=${courseId}`,
-                                    );
-
-                                setCourseProgress(progress);
-                            } catch (courseProgressError) {
-                                console.error(
-                                    "Unable to load course progress:",
-                                    courseProgressError,
-                                );
-
-                                setCourseProgress(null);
-                            }
-                        } else {
-                            setCourseProgress(null);
-                        }
-                    } catch (enrollmentError) {
-                        console.error(
-                            "Unable to check enrollment:",
-                            enrollmentError,
-                        );
-
-                        setEnrolled(false);
-                        setCourseProgress(null);
-                    }
-                } catch (authError) {
-                    /*
-                     * The course itself remains viewable
-                     * even when the user isn't authenticated.
-                     */
-                    console.error(
-                        "Unable to load authenticated user:",
-                        authError,
+                const courseData =
+                    await api<Course>(
+                        `/courses/${courseId}`,
                     );
 
-                    setLessonProgress([]);
-                    setEnrolled(false);
-                    setCourseProgress(null);
-                } finally {
-                    setProgressLoading(false);
+                setCourse(courseData);
+
+                const unitData =
+                    await api<Unit[]>(
+                        `/units/course/${courseId}`,
+                    );
+
+                const sortedUnits =
+                    [...unitData].sort(
+                        (a, b) =>
+                            (a.number ?? a.id) -
+                            (b.number ?? b.id),
+                    );
+
+                const unitsWithLessons =
+                    await Promise.all(
+                        sortedUnits.map(
+                            async (unit) => {
+                                try {
+                                    const lessons =
+                                        await api<Lesson[]>(
+                                            `/lessons/unit/${unit.id}`,
+                                        );
+
+                                    return {
+                                        ...unit,
+                                        lessons:
+                                            [...lessons].sort(
+                                                (a, b) =>
+                                                    (a.number ??
+                                                        a.id) -
+                                                    (b.number ??
+                                                        b.id),
+                                            ),
+                                    };
+                                } catch {
+                                    return {
+                                        ...unit,
+                                        lessons: [],
+                                    };
+                                }
+                            },
+                        ),
+                    );
+
+                setUnits(
+                    unitsWithLessons,
+                );
+
+                /*
+                 * Get the user's progress.
+                 *
+                 * The endpoint is user based, so we first
+                 * get the current authenticated user.
+                 */
+                try {
+                    const user =
+                        await api<{
+                            id: number;
+                        }>("/auth/me");
+
+                    const progressData =
+                        await api<LessonProgress[]>(
+                            `/lesson-progress/user/${user.id}`,
+                        );
+
+                    setProgress(
+                        progressData,
+                    );
+                } catch {
+                    setProgress([]);
+                }
+
+                /*
+                 * Open the first unit initially.
+                 */
+                if (
+                    unitsWithLessons.length > 0
+                ) {
+                    setExpandedUnits({
+                        [unitsWithLessons[0].id]:
+                            true,
+                    });
                 }
             } catch (err) {
                 console.error(err);
@@ -212,481 +186,543 @@ export default function CoursePage() {
         loadCourse();
     }, [courseId]);
 
-    /*
-     * Enroll the authenticated user in this course.
-     */
-    async function handleEnroll() {
-        try {
-            setEnrolling(true);
-            setError("");
+    const progressMap = useMemo(() => {
+        const map = new Map<
+            number,
+            LessonProgress
+        >();
 
-            await api("/enrollments", {
-                method: "POST",
-                body: JSON.stringify({
-                    courseId: Number(courseId),
-                }),
-            });
-
-            setEnrolled(true);
-
-            /*
-             * Refresh course progress after enrollment.
-             */
-            try {
-                const progress =
-                    await api<CourseProgress>(
-                        `/enrollments/progress?courseId=${courseId}`,
-                    );
-
-                setCourseProgress(progress);
-            } catch (progressError) {
-                console.error(
-                    "Unable to load course progress after enrollment:",
-                    progressError,
-                );
-
-                setCourseProgress(null);
-            }
-        } catch (error) {
-            console.error(error);
-
-            setError(
-                error instanceof Error
-                    ? error.message
-                    : "Unable to enroll in course.",
-            );
-        } finally {
-            setEnrolling(false);
+        for (const item of progress) {
+            map.set(item.lessonId, item);
         }
-    }
 
-    /*
-     * Find progress belonging to a specific lesson.
-     */
-    function getLessonProgress(lessonId: number) {
-        return lessonProgress.find(
-            (item) => item.lessonId === lessonId,
-        );
-    }
+        return map;
+    }, [progress]);
 
-    /*
-     * All lessons in the course.
-     */
-    const allLessons = units.flatMap(
-        (unit) => unit.lessons,
+    const allLessons = useMemo(
+        () =>
+            units.flatMap(
+                (unit) => unit.lessons,
+            ),
+        [units],
     );
 
-    /*
-     * Backend is the source of truth for course progress.
-     */
     const completedLessons =
-        courseProgress?.completedLessons ?? 0;
+        allLessons.filter((lesson) => {
+            const item =
+                progressMap.get(lesson.id);
+
+            return (
+                item?.status ===
+                "COMPLETED" ||
+                Boolean(item?.completedAt)
+            );
+        }).length;
 
     const totalLessons =
-        courseProgress?.totalLessons ?? allLessons.length;
+        allLessons.length;
 
-    const progressPercentage =
-        courseProgress?.progress ?? 0;
+    const courseProgress =
+        totalLessons > 0
+            ? Math.round(
+                (completedLessons /
+                    totalLessons) *
+                100,
+            )
+            : 0;
 
     /*
-     * Find the first lesson that hasn't been completed.
+     * Determine which lesson should be available.
+     *
+     * First lesson is always available.
+     * After that, a lesson becomes available
+     * after the previous lesson is completed.
      */
-    function getContinueLesson() {
-        const incompleteLesson = allLessons.find(
-            (lesson) => {
-                const progress = getLessonProgress(
-                    lesson.id,
-                );
+    function isLessonUnlocked(
+        lessonIndex: number,
+    ) {
+        if (lessonIndex === 0) {
+            return true;
+        }
 
-                return progress?.status !== "completed";
-            },
-        );
+        const previousLesson =
+            allLessons[lessonIndex - 1];
+
+        if (!previousLesson) {
+            return false;
+        }
+
+        const previousProgress =
+            progressMap.get(
+                previousLesson.id,
+            );
 
         return (
-            incompleteLesson ??
-            allLessons[0] ??
-            null
+            previousProgress?.status ===
+            "COMPLETED" ||
+            Boolean(
+                previousProgress?.completedAt,
+            )
         );
     }
 
-    /*
-     * Continue learning.
-     */
-    function handleContinueLearning() {
-        const lesson = getContinueLesson();
+    function toggleUnit(unitId: number) {
+        setExpandedUnits((current) => ({
+            ...current,
+            [unitId]:
+                !current[unitId],
+        }));
+    }
 
-        if (!lesson) {
-            return;
-        }
-
-        router.push(
-            `/lessons/${lesson.id}/learn`,
+    function getGlobalLessonIndex(
+        lessonId: number,
+    ) {
+        return allLessons.findIndex(
+            (lesson) =>
+                lesson.id === lessonId,
         );
     }
 
     if (loading) {
         return (
-            <main className="flex min-h-screen items-center justify-center bg-zinc-50">
-                <p className="text-sm text-zinc-500">
-                    Loading course...
-                </p>
-            </main>
-        );
-    }
+            <main className="min-h-screen bg-zinc-50">
+                <div className="mx-auto max-w-5xl px-6 py-10">
+                    <div className="animate-pulse">
+                        <div className="h-8 w-64 rounded bg-zinc-200" />
+                        <div className="mt-4 h-4 w-96 max-w-full rounded bg-zinc-200" />
 
-    if (error && !course) {
-        return (
-            <main className="min-h-screen bg-zinc-50 px-6 py-12">
-                <div className="mx-auto max-w-5xl">
-                    <button
-                        onClick={() => router.back()}
-                        className="mb-8 text-sm font-medium text-zinc-600 hover:text-zinc-900"
-                    >
-                        ← Back
-                    </button>
+                        <div className="mt-10 h-3 rounded-full bg-zinc-200" />
 
-                    <div className="rounded-2xl border border-red-200 bg-red-50 p-6 text-red-700">
-                        {error}
+                        <div className="mt-10 space-y-4">
+                            {[1, 2, 3].map(
+                                (item) => (
+                                    <div
+                                        key={
+                                            item
+                                        }
+                                        className="h-24 rounded-2xl bg-zinc-200"
+                                    />
+                                ),
+                            )}
+                        </div>
                     </div>
                 </div>
             </main>
         );
     }
 
-    if (!course) {
+    if (error || !course) {
         return (
-            <main className="flex min-h-screen items-center justify-center bg-zinc-50">
-                <p className="text-sm text-zinc-500">
-                    Course not found.
-                </p>
+            <main className="flex min-h-screen items-center justify-center bg-zinc-50 px-6">
+                <div className="w-full max-w-md rounded-3xl border border-zinc-200 bg-white p-8 text-center shadow-sm">
+                    <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-red-50 text-xl text-red-500">
+                        !
+                    </div>
+
+                    <h1 className="mt-5 text-xl font-bold">
+                        Unable to load course
+                    </h1>
+
+                    <p className="mt-2 text-sm text-zinc-500">
+                        {error ||
+                            "Course not found."}
+                    </p>
+
+                    <button
+                        type="button"
+                        onClick={() =>
+                            router.back()
+                        }
+                        className="mt-6 rounded-xl bg-zinc-900 px-5 py-3 text-sm font-semibold text-white"
+                    >
+                        Go back
+                    </button>
+                </div>
             </main>
         );
     }
 
     return (
-        <main className="min-h-screen bg-zinc-50 text-zinc-900">
-            {/* Header */}
-            <header className="border-b border-zinc-200 bg-white">
-                <div className="mx-auto flex h-16 max-w-7xl items-center px-6">
-                    <button
-                        onClick={() => router.back()}
-                        className="text-sm font-medium text-zinc-600 transition hover:text-zinc-900"
-                    >
-                        ← Back
-                    </button>
-
-                    <div className="ml-6 text-xl font-bold">
-                        LingoLearn
-                    </div>
-                </div>
-            </header>
-
-            <div className="mx-auto max-w-6xl px-6 py-12">
-                {/* Course header */}
-                <section className="rounded-3xl border border-zinc-200 bg-white p-8">
-                    <div className="flex flex-col gap-6 sm:flex-row sm:items-center">
-                        <div className="flex h-20 w-20 shrink-0 items-center justify-center rounded-3xl bg-zinc-100 text-3xl font-bold">
-                            {course.number ?? "→"}
+        <ProtectedRoute>
+            <main className="min-h-screen bg-zinc-50 text-zinc-900">
+                {/* Header */}
+                <header className="border-b border-zinc-200 bg-white">
+                    <div className="mx-auto max-w-5xl px-6">
+                        <div className="flex h-16 items-center">
+                            <Link
+                                href="/dashboard"
+                                className="text-sm font-medium text-zinc-500 transition hover:text-zinc-900"
+                            >
+                                ← Dashboard
+                            </Link>
                         </div>
+                    </div>
+                </header>
 
-                        <div className="min-w-0 flex-1">
-                            <p className="text-sm font-medium uppercase tracking-wider text-zinc-400">
-                                Course
-                            </p>
+                {/* Course Hero */}
+                <section className="border-b border-zinc-200 bg-white">
+                    <div className="mx-auto max-w-5xl px-6 py-10">
+                        <div className="max-w-3xl">
+                            <div className="flex flex-wrap items-center gap-2">
+                                {course.level && (
+                                    <span className="rounded-full bg-zinc-100 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-zinc-600">
+                                    {
+                                        course.level
+                                    }
+                                </span>
+                                )}
 
-                            <h1 className="mt-1 text-4xl font-bold">
+                                <span className="rounded-full bg-zinc-100 px-3 py-1 text-xs font-semibold text-zinc-600">
+                                {
+                                    totalLessons
+                                }{" "}
+                                    lessons
+                            </span>
+                            </div>
+
+                            <h1 className="mt-5 text-4xl font-bold tracking-tight sm:text-5xl">
                                 {course.title}
                             </h1>
 
                             {course.description && (
-                                <p className="mt-3 max-w-2xl text-zinc-600">
-                                    {course.description}
+                                <p className="mt-4 max-w-2xl text-base leading-7 text-zinc-500">
+                                    {
+                                        course.description
+                                    }
                                 </p>
                             )}
-
-                            {course.type && (
-                                <span className="mt-4 inline-flex rounded-full bg-zinc-100 px-3 py-1 text-xs font-medium text-zinc-600">
-                                    {course.type}
-                                </span>
-                            )}
-
-                            {/* Enrollment button */}
-                            <div className="mt-6">
-                                {enrolled ? (
-                                    <button
-                                        type="button"
-                                        onClick={
-                                            handleContinueLearning
-                                        }
-                                        disabled={
-                                            allLessons.length === 0
-                                        }
-                                        className="rounded-xl bg-zinc-900 px-6 py-3 text-sm font-semibold text-white transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-50"
-                                    >
-                                        Continue Learning →
-                                    </button>
-                                ) : (
-                                    <button
-                                        type="button"
-                                        onClick={handleEnroll}
-                                        disabled={
-                                            enrolling ||
-                                            allLessons.length === 0
-                                        }
-                                        className="rounded-xl bg-zinc-900 px-6 py-3 text-sm font-semibold text-white transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-50"
-                                    >
-                                        {enrolling
-                                            ? "Starting..."
-                                            : "Start Learning"}
-                                    </button>
-                                )}
-                            </div>
                         </div>
-                    </div>
 
-                    {/* Error after enrollment */}
-                    {error && (
-                        <div className="mt-6 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-                            {error}
-                        </div>
-                    )}
-
-                    {/* Course progress */}
-                    <div className="mt-8 border-t border-zinc-100 pt-6">
-                        <div className="flex items-center justify-between">
-                            <div>
-                                <p className="text-sm font-semibold">
-                                    Your progress
-                                </p>
-
-                                <p className="mt-1 text-sm text-zinc-500">
-                                    {completedLessons} of{" "}
-                                    {totalLessons} lessons completed
-                                </p>
-                            </div>
-
-                            <span className="text-2xl font-bold">
-                                {progressPercentage}%
+                        {/* Progress */}
+                        <div className="mt-8 max-w-3xl">
+                            <div className="flex items-center justify-between text-sm">
+                            <span className="font-medium">
+                                Course progress
                             </span>
-                        </div>
 
-                        <div className="mt-4 h-3 overflow-hidden rounded-full bg-zinc-100">
-                            <div
-                                className="h-full rounded-full bg-zinc-900 transition-all"
-                                style={{
-                                    width: `${Math.min(
-                                        100,
-                                        Math.max(
-                                            0,
-                                            progressPercentage,
-                                        ),
-                                    )}%`,
-                                }}
-                            />
+                                <span className="font-semibold text-zinc-500">
+                                {
+                                    courseProgress
+                                }
+                                    %
+                            </span>
+                            </div>
+
+                            <div className="mt-3 h-3 overflow-hidden rounded-full bg-zinc-100">
+                                <div
+                                    className="h-full rounded-full bg-zinc-900 transition-all duration-500"
+                                    style={{
+                                        width: `${courseProgress}%`,
+                                    }}
+                                />
+                            </div>
+
+                            <p className="mt-2 text-xs text-zinc-400">
+                                {
+                                    completedLessons
+                                }{" "}
+                                of{" "}
+                                {
+                                    totalLessons
+                                }{" "}
+                                lessons completed
+                            </p>
                         </div>
                     </div>
                 </section>
 
                 {/* Units */}
-                <section className="mt-12">
+                <section className="mx-auto max-w-5xl px-6 py-10">
                     <div className="mb-6">
                         <h2 className="text-2xl font-bold">
-                            Course Units
+                            Course lessons
                         </h2>
 
-                        <p className="mt-2 text-zinc-500">
-                            Work through each lesson to continue
-                            your learning.
+                        <p className="mt-1 text-sm text-zinc-500">
+                            Complete each lesson to
+                            unlock the next one.
                         </p>
                     </div>
 
-                    {progressLoading && (
-                        <p className="mb-4 text-sm text-zinc-400">
-                            Loading your progress...
-                        </p>
-                    )}
-
                     {units.length === 0 ? (
-                        <div className="rounded-2xl border border-zinc-200 bg-white p-10 text-center">
+                        <div className="rounded-3xl border border-zinc-200 bg-white p-10 text-center">
                             <h3 className="font-semibold">
-                                No units available
+                                No units yet
                             </h3>
 
                             <p className="mt-2 text-sm text-zinc-500">
-                                This course does not have any units
-                                yet.
+                                This course doesn't
+                                contain any units yet.
                             </p>
                         </div>
                     ) : (
-                        <div className="space-y-10">
+                        <div className="space-y-5">
                             {units.map(
-                                (unit, unitIndex) => (
-                                    <section
-                                        key={unit.id}
-                                    >
-                                        <div className="mb-4">
-                                            <p className="text-xs font-semibold uppercase tracking-wider text-zinc-400">
-                                                Unit{" "}
-                                                {unit.number ??
-                                                    unitIndex +
-                                                    1}
-                                            </p>
+                                (
+                                    unit,
+                                    unitIndex,
+                                ) => {
+                                    const isOpen =
+                                        Boolean(
+                                            expandedUnits[
+                                                unit.id
+                                                ],
+                                        );
 
-                                            <h3 className="mt-1 text-xl font-bold">
-                                                {unit.title}
-                                            </h3>
+                                    const unitCompleted =
+                                        unit.lessons.length >
+                                        0 &&
+                                        unit.lessons.every(
+                                            (
+                                                lesson,
+                                            ) => {
+                                                const item =
+                                                    progressMap.get(
+                                                        lesson.id,
+                                                    );
 
-                                            {unit.description && (
-                                                <p className="mt-1 text-sm text-zinc-500">
+                                                return (
+                                                    item?.status ===
+                                                    "COMPLETED" ||
+                                                    Boolean(
+                                                        item?.completedAt,
+                                                    )
+                                                );
+                                            },
+                                        );
+
+                                    return (
+                                        <div
+                                            key={
+                                                unit.id
+                                            }
+                                            className="overflow-hidden rounded-3xl border border-zinc-200 bg-white shadow-sm"
+                                        >
+                                            {/* Unit header */}
+                                            <button
+                                                type="button"
+                                                onClick={() =>
+                                                    toggleUnit(
+                                                        unit.id,
+                                                    )
+                                                }
+                                                className="flex w-full items-center gap-4 p-5 text-left transition hover:bg-zinc-50 sm:p-6"
+                                            >
+                                                <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-zinc-900 text-sm font-bold text-white">
                                                     {
-                                                        unit.description
+                                                        unitIndex +
+                                                        1
                                                     }
-                                                </p>
+                                                </div>
+
+                                                <div className="min-w-0 flex-1">
+                                                    <div className="flex items-center gap-2">
+                                                        <h3 className="font-bold">
+                                                            {
+                                                                unit.title
+                                                            }
+                                                        </h3>
+
+                                                        {unitCompleted && (
+                                                            <span className="text-sm">
+                                                            ✓
+                                                        </span>
+                                                        )}
+                                                    </div>
+
+                                                    {unit.description && (
+                                                        <p className="mt-1 line-clamp-1 text-sm text-zinc-500">
+                                                            {
+                                                                unit.description
+                                                            }
+                                                        </p>
+                                                    )}
+
+                                                    <p className="mt-2 text-xs text-zinc-400">
+                                                        {
+                                                            unit.lessons
+                                                                .length
+                                                        }{" "}
+                                                        lessons
+                                                    </p>
+                                                </div>
+
+                                                <span
+                                                    className={[
+                                                        "text-zinc-400 transition-transform",
+                                                        isOpen
+                                                            ? "rotate-180"
+                                                            : "",
+                                                    ].join(
+                                                        " ",
+                                                    )}
+                                                >
+                                                ↓
+                                            </span>
+                                            </button>
+
+                                            {/* Lessons */}
+                                            {isOpen && (
+                                                <div className="border-t border-zinc-100">
+                                                    {unit.lessons.length ===
+                                                    0 ? (
+                                                        <div className="p-6 text-sm text-zinc-400">
+                                                            No lessons
+                                                            available.
+                                                        </div>
+                                                    ) : (
+                                                        <div>
+                                                            {unit.lessons.map(
+                                                                (
+                                                                    lesson,
+                                                                ) => {
+                                                                    const globalIndex =
+                                                                        getGlobalLessonIndex(
+                                                                            lesson.id,
+                                                                        );
+
+                                                                    const lessonProgress =
+                                                                        progressMap.get(
+                                                                            lesson.id,
+                                                                        );
+
+                                                                    const completed =
+                                                                        lessonProgress?.status ===
+                                                                        "COMPLETED" ||
+                                                                        Boolean(
+                                                                            lessonProgress?.completedAt,
+                                                                        );
+
+                                                                    const unlocked =
+                                                                        isLessonUnlocked(
+                                                                            globalIndex,
+                                                                        );
+
+                                                                    return (
+                                                                        <div
+                                                                            key={
+                                                                                lesson.id
+                                                                            }
+                                                                            className="border-b border-zinc-100 last:border-b-0"
+                                                                        >
+                                                                            {unlocked ? (
+                                                                                <Link
+                                                                                    href={`/lessons/${lesson.id}/learn`}
+                                                                                    className="flex items-center gap-4 p-5 transition hover:bg-zinc-50 sm:px-6"
+                                                                                >
+                                                                                    <div
+                                                                                        className={[
+                                                                                            "flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-sm font-bold",
+                                                                                            completed
+                                                                                                ? "bg-zinc-900 text-white"
+                                                                                                : "bg-zinc-100 text-zinc-700",
+                                                                                        ].join(
+                                                                                            " ",
+                                                                                        )}
+                                                                                    >
+                                                                                        {completed
+                                                                                            ? "✓"
+                                                                                            : lesson.number ??
+                                                                                            globalIndex +
+                                                                                            1}
+                                                                                    </div>
+
+                                                                                    <div className="min-w-0 flex-1">
+                                                                                        <h4 className="font-semibold">
+                                                                                            {
+                                                                                                lesson.title
+                                                                                            }
+                                                                                        </h4>
+
+                                                                                        {lesson.description && (
+                                                                                            <p className="mt-1 line-clamp-1 text-sm text-zinc-500">
+                                                                                                {
+                                                                                                    lesson.description
+                                                                                                }
+                                                                                            </p>
+                                                                                        )}
+
+                                                                                        {lessonProgress?.progress !=
+                                                                                            null &&
+                                                                                            !completed && (
+                                                                                                <div className="mt-2 flex items-center gap-2">
+                                                                                                    <div className="h-1.5 flex-1 max-w-32 overflow-hidden rounded-full bg-zinc-100">
+                                                                                                        <div
+                                                                                                            className="h-full rounded-full bg-zinc-900"
+                                                                                                            style={{
+                                                                                                                width: `${Math.min(
+                                                                                                                    100,
+                                                                                                                    Math.max(
+                                                                                                                        0,
+                                                                                                                        Number(
+                                                                                                                            lessonProgress.progress,
+                                                                                                                        ),
+                                                                                                                    ),
+                                                                                                                )}%`,
+                                                                                                            }}
+                                                                                                        />
+                                                                                                    </div>
+
+                                                                                                    <span className="text-xs text-zinc-400">
+                                                                                                    {
+                                                                                                        lessonProgress.progress
+                                                                                                    }
+                                                                                                        %
+                                                                                                </span>
+                                                                                                </div>
+                                                                                            )}
+                                                                                    </div>
+
+                                                                                    <span className="text-zinc-400">
+                                                                                    →
+                                                                                </span>
+                                                                                </Link>
+                                                                            ) : (
+                                                                                <div className="flex items-center gap-4 p-5 opacity-50 sm:px-6">
+                                                                                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-zinc-100 text-sm text-zinc-400">
+                                                                                        🔒
+                                                                                    </div>
+
+                                                                                    <div className="min-w-0 flex-1">
+                                                                                        <h4 className="font-semibold">
+                                                                                            {
+                                                                                                lesson.title
+                                                                                            }
+                                                                                        </h4>
+
+                                                                                        {lesson.description && (
+                                                                                            <p className="mt-1 line-clamp-1 text-sm text-zinc-500">
+                                                                                                {
+                                                                                                    lesson.description
+                                                                                                }
+                                                                                            </p>
+                                                                                        )}
+
+                                                                                        <p className="mt-1 text-xs text-zinc-400">
+                                                                                            Complete the
+                                                                                            previous
+                                                                                            lesson to
+                                                                                            unlock
+                                                                                        </p>
+                                                                                    </div>
+                                                                                </div>
+                                                                            )}
+                                                                        </div>
+                                                                    );
+                                                                },
+                                                            )}
+                                                        </div>
+                                                    )}
+                                                </div>
                                             )}
                                         </div>
-
-                                        {unit.lessons
-                                            .length ===
-                                        0 ? (
-                                            <div className="rounded-2xl border border-zinc-200 bg-white p-5 text-sm text-zinc-500">
-                                                No lessons
-                                                available.
-                                            </div>
-                                        ) : (
-                                            <div className="space-y-3">
-                                                {unit.lessons.map(
-                                                    (
-                                                        lesson,
-                                                        lessonIndex,
-                                                    ) => {
-                                                        const progress =
-                                                            getLessonProgress(
-                                                                lesson.id,
-                                                            );
-
-                                                        const completed =
-                                                            progress?.status ===
-                                                            "completed";
-
-                                                        const started =
-                                                            progress?.status ===
-                                                            "in_progress" ||
-                                                            progress?.status ===
-                                                            "started";
-
-                                                        const progressValue =
-                                                            progress?.progress ??
-                                                            0;
-
-                                                        return (
-                                                            <button
-                                                                key={
-                                                                    lesson.id
-                                                                }
-                                                                type="button"
-                                                                onClick={() =>
-                                                                    router.push(
-                                                                        `/lessons/${lesson.id}/learn`,
-                                                                    )
-                                                                }
-                                                                className="group flex w-full items-center gap-4 rounded-2xl border border-zinc-200 bg-white p-5 text-left transition hover:border-zinc-400 hover:shadow-sm"
-                                                            >
-                                                                {/* Lesson number/status */}
-                                                                <div
-                                                                    className={[
-                                                                        "flex h-12 w-12 shrink-0 items-center justify-center rounded-full text-sm font-bold",
-                                                                        completed
-                                                                            ? "bg-zinc-900 text-white"
-                                                                            : started
-                                                                                ? "border-2 border-zinc-900 text-zinc-900"
-                                                                                : "bg-zinc-100 text-zinc-500",
-                                                                    ].join(
-                                                                        " ",
-                                                                    )}
-                                                                >
-                                                                    {completed
-                                                                        ? "✓"
-                                                                        : lesson.number ??
-                                                                        lessonIndex +
-                                                                        1}
-                                                                </div>
-
-                                                                {/* Lesson information */}
-                                                                <div className="min-w-0 flex-1">
-                                                                    <h4 className="font-semibold">
-                                                                        {
-                                                                            lesson.title
-                                                                        }
-                                                                    </h4>
-
-                                                                    {lesson.description && (
-                                                                        <p className="mt-1 line-clamp-2 text-sm text-zinc-500">
-                                                                            {
-                                                                                lesson.description
-                                                                            }
-                                                                        </p>
-                                                                    )}
-
-                                                                    {/* Lesson progress */}
-                                                                    {started &&
-                                                                        !completed && (
-                                                                            <div className="mt-3 flex items-center gap-3">
-                                                                                <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-zinc-100">
-                                                                                    <div
-                                                                                        className="h-full rounded-full bg-zinc-900 transition-all"
-                                                                                        style={{
-                                                                                            width: `${Math.min(
-                                                                                                100,
-                                                                                                Math.max(
-                                                                                                    0,
-                                                                                                    progressValue,
-                                                                                                ),
-                                                                                            )}%`,
-                                                                                        }}
-                                                                                    />
-                                                                                </div>
-
-                                                                                <span className="text-xs font-medium text-zinc-500">
-                                                                                    {progressValue}
-                                                                                    %
-                                                                                </span>
-                                                                            </div>
-                                                                        )}
-
-                                                                    {/* Completed label */}
-                                                                    {completed && (
-                                                                        <p className="mt-2 text-xs font-medium text-zinc-500">
-                                                                            Completed
-                                                                        </p>
-                                                                    )}
-
-                                                                    {/* Started label */}
-                                                                    {started &&
-                                                                        !completed && (
-                                                                            <p className="mt-2 text-xs font-medium text-zinc-500">
-                                                                                In
-                                                                                progress
-                                                                            </p>
-                                                                        )}
-                                                                </div>
-
-                                                                {/* Arrow */}
-                                                                <div className="shrink-0 text-zinc-400 transition group-hover:translate-x-1 group-hover:text-zinc-900">
-                                                                    →
-                                                                </div>
-                                                            </button>
-                                                        );
-                                                    },
-                                                )}
-                                            </div>
-                                        )}
-                                    </section>
-                                ),
+                                    );
+                                },
                             )}
                         </div>
                     )}
                 </section>
-            </div>
-        </main>
+            </main>
+        </ProtectedRoute>
     );
 }

@@ -2,18 +2,21 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import { api } from "@/lib/api";
 
-import {
-    getCurrentUser,
-    getToken,
-    logout,
-    type User,
-} from "@/lib/auth";
+interface User {
+    id: number;
+    email: string;
+    username?: string;
+    name?: string;
+}
 
-import {
-    getLanguages,
-    type Language,
-} from "@/lib/languages";
+interface Language {
+    id: number;
+    code: string;
+    name: string;
+    nativeName?: string;
+}
 
 export default function DashboardPage() {
     const router = useRouter();
@@ -25,7 +28,7 @@ export default function DashboardPage() {
 
     useEffect(() => {
         async function loadDashboard() {
-            const token = getToken();
+            const token = localStorage.getItem("lingolearn_token");
 
             if (!token) {
                 router.replace("/login");
@@ -35,8 +38,8 @@ export default function DashboardPage() {
             try {
                 const [currentUser, availableLanguages] =
                     await Promise.all([
-                        getCurrentUser(),
-                        getLanguages(),
+                        api<User>("/auth/me"),
+                        api<Language[]>("/languages"),
                     ]);
 
                 setUser(currentUser);
@@ -44,10 +47,13 @@ export default function DashboardPage() {
             } catch (err) {
                 console.error(err);
 
+                localStorage.removeItem("lingolearn_token");
+                router.replace("/login");
+
                 setError(
                     err instanceof Error
                         ? err.message
-                        : "Unable to load dashboard",
+                        : "Unable to load dashboard.",
                 );
             } finally {
                 setLoading(false);
@@ -57,26 +63,16 @@ export default function DashboardPage() {
         loadDashboard();
     }, [router]);
 
-    function handleLogout() {
-        logout();
+    function logout() {
+        localStorage.removeItem("lingolearn_token");
         router.replace("/login");
     }
 
     if (loading) {
         return (
-            <main className="flex min-h-screen items-center justify-center bg-gray-50">
-                <div className="text-gray-500">
+            <main className="flex min-h-screen items-center justify-center bg-zinc-50">
+                <div className="text-sm text-zinc-500">
                     Loading your dashboard...
-                </div>
-            </main>
-        );
-    }
-
-    if (error) {
-        return (
-            <main className="flex min-h-screen items-center justify-center bg-gray-50">
-                <div className="rounded-xl border border-red-200 bg-red-50 px-6 py-4 text-red-700">
-                    {error}
                 </div>
             </main>
         );
@@ -87,113 +83,96 @@ export default function DashboardPage() {
     }
 
     return (
-        <main className="min-h-screen bg-gray-50">
-
-            {/* Header */}
-            <header className="border-b bg-white">
-                <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-4">
-
-                    <div>
-                        <h1 className="text-2xl font-bold">
-                            LingoLearn
-                        </h1>
-
-                        <p className="text-sm text-gray-500">
-                            Language learning platform
-                        </p>
+        <main className="min-h-screen bg-zinc-50 text-zinc-900">
+            <header className="border-b border-zinc-200 bg-white">
+                <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-6">
+                    <div className="text-xl font-bold">
+                        LingoLearn
                     </div>
 
                     <button
-                        onClick={handleLogout}
-                        className="rounded-lg bg-black px-4 py-2 text-sm font-medium text-white transition hover:bg-gray-800"
+                        onClick={logout}
+                        className="rounded-xl px-4 py-2 text-sm font-medium text-zinc-600 hover:bg-zinc-100 hover:text-zinc-900"
                     >
                         Log out
                     </button>
-
                 </div>
             </header>
 
-            {/* Content */}
             <div className="mx-auto max-w-7xl px-6 py-10">
-
-                {/* Welcome */}
-                <section className="mb-10">
-
-                    <p className="text-sm font-medium text-gray-500">
+                <section>
+                    <p className="text-sm font-medium text-zinc-500">
                         Welcome back
                     </p>
 
-                    <h2 className="mt-1 text-4xl font-bold tracking-tight">
-                        {user.name}
-                    </h2>
+                    <h1 className="mt-2 text-4xl font-bold tracking-tight">
+                        {user.name || user.username || user.email}
+                    </h1>
 
-                    <p className="mt-2 text-gray-600">
-                        Choose a language and start learning.
+                    <p className="mt-3 text-zinc-600">
+                        Choose a language and continue learning.
                     </p>
-
                 </section>
 
-                {/* Languages */}
-                <section>
+                <section className="mt-12">
+                    <div className="mb-6">
+                        <h2 className="text-2xl font-bold">
+                            Languages
+                        </h2>
 
-                    <div className="mb-5">
-                        <h3 className="text-2xl font-bold">
-                            Learn a language
-                        </h3>
-
-                        <p className="mt-1 text-gray-500">
-                            Select the language you want to learn.
+                        <p className="mt-1 text-sm text-zinc-500">
+                            Select a language to explore its courses.
                         </p>
                     </div>
 
+                    {error && (
+                        <div className="mb-6 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                            {error}
+                        </div>
+                    )}
+
                     {languages.length === 0 ? (
-                        <div className="rounded-xl border bg-white p-8 text-center text-gray-500">
-                            No languages available yet.
+                        <div className="rounded-2xl border border-zinc-200 bg-white p-8 text-center text-zinc-500">
+                            No languages available.
                         </div>
                     ) : (
                         <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
-
                             {languages.map((language) => (
                                 <button
                                     key={language.id}
                                     onClick={() =>
-                                        router.push(
-                                            `/languages/${language.id}`,
-                                        )
+                                        router.push(`/languages/${language.id}`)
                                     }
-                                    className="group rounded-2xl border bg-white p-6 text-left shadow-sm transition hover:-translate-y-1 hover:shadow-md"
+                                    className="group rounded-2xl border border-zinc-200 bg-white p-6 text-left transition hover:-translate-y-1 hover:border-zinc-300 hover:shadow-lg"
                                 >
-
                                     <div className="flex items-center justify-between">
-
-                                        <div className="flex h-14 w-14 items-center justify-center rounded-xl bg-gray-100 text-2xl font-bold">
-                                            {language.name
-                                                .charAt(0)
-                                                .toUpperCase()}
+                                        <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-zinc-100 text-xl font-bold">
+                                            {language.name.charAt(0).toUpperCase()}
                                         </div>
 
-                                        <span className="text-gray-400 transition group-hover:translate-x-1">
+                                        <span className="text-zinc-400 transition group-hover:translate-x-1 group-hover:text-zinc-700">
                       →
                     </span>
-
                                     </div>
 
-                                    <h4 className="mt-6 text-xl font-bold">
+                                    <h3 className="mt-6 text-xl font-bold">
                                         {language.name}
-                                    </h4>
+                                    </h3>
 
-                                    <p className="mt-1 text-sm text-gray-500">
-                                        Start learning {language.name}
+                                    {language.nativeName && (
+                                        <p className="mt-1 text-sm text-zinc-500">
+                                            {language.nativeName}
+                                        </p>
+                                    )}
+
+                                    <p className="mt-4 text-sm text-zinc-500">
+                                        Explore courses
                                     </p>
-
                                 </button>
                             ))}
-
                         </div>
                     )}
-
                 </section>
-
             </div>
         </main>
     );

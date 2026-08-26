@@ -14,13 +14,11 @@ export async function api<T>(
     ...options,
     headers: {
       "Content-Type": "application/json",
-
       ...(token
           ? {
             Authorization: `Bearer ${token}`,
           }
           : {}),
-
       ...options?.headers,
     },
   });

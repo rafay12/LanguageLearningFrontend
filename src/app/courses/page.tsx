@@ -1,79 +1,51 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import {
+    useCallback,
+    useEffect,
+    useState,
+} from "react";
 import Link from "next/link";
 
-import { api } from "@/lib/api";
 import ProtectedRoute from "@/components/ProtectedRoute";
+import { api } from "@/lib/api";
 
 interface Course {
     id: number;
     title: string;
     description?: string | null;
-    level?: string | null;
-    variantId?: number | null;
-}
-
-interface User {
-    id: number;
+    languageId?: number;
+    isActive?: boolean;
 }
 
 export default function CoursesPage() {
     const [courses, setCourses] =
         useState<Course[]>([]);
 
-    const [enrolledIds, setEnrolledIds] =
-        useState<Set<number>>(
-            new Set(),
-        );
-
     const [loading, setLoading] =
         useState(true);
 
     const [error, setError] =
-        useState("");
+        useState<string | null>(null);
 
-    const [enrolling, setEnrolling] =
-        useState<number | null>(null);
-
-    useEffect(() => {
-        async function load() {
+    const loadCourses =
+        useCallback(async () => {
             try {
                 setLoading(true);
+                setError(null);
 
-                const [
-                    courseData,
-                    user,
-                ] = await Promise.all([
-                    api<Course[]>("/courses"),
-                    api<User>("/auth/me"),
-                ]);
-
-                setCourses(courseData);
-
-                try {
-                    const enrollments =
-                        await api<
-                            {
-                                courseId: number;
-                            }[]
-                        >(
-                            `/enrollments/user/${user.id}`,
-                        );
-
-                    setEnrolledIds(
-                        new Set(
-                            enrollments.map(
-                                (item) =>
-                                    item.courseId,
-                            ),
-                        ),
+                const data =
+                    await api<Course[]>(
+                        "/courses",
                     );
-                } catch {
-                    setEnrolledIds(
-                        new Set(),
-                    );
-                }
+
+                setCourses(
+                    data.filter(
+                        (course) =>
+                            course.isActive !==
+                            false,
+                    ),
+                );
             } catch (err) {
                 setError(
                     err instanceof Error
@@ -83,207 +55,140 @@ export default function CoursesPage() {
             } finally {
                 setLoading(false);
             }
-        }
+        }, []);
 
-        load();
-    }, []);
-
-    async function enroll(
-        courseId: number,
-    ) {
-        try {
-            setEnrolling(courseId);
-
-            const user =
-                await api<User>(
-                    "/auth/me",
-                );
-
-            await api(
-                "/enrollments",
-                {
-                    method: "POST",
-                    body: JSON.stringify({
-                        userId: user.id,
-                        courseId,
-                    }),
-                },
-            );
-
-            setEnrolledIds(
-                (current) => {
-                    const next =
-                        new Set(current);
-
-                    next.add(courseId);
-
-                    return next;
-                },
-            );
-        } catch (err) {
-            alert(
-                err instanceof Error
-                    ? err.message
-                    : "Unable to enroll.",
-            );
-        } finally {
-            setEnrolling(null);
-        }
-    }
-
-    if (loading) {
-        return (
-            <main className="min-h-screen bg-zinc-50 p-6">
-                <div className="mx-auto max-w-6xl animate-pulse">
-                    <div className="h-8 w-56 rounded bg-zinc-200" />
-
-                    <div className="mt-8 grid gap-5 md:grid-cols-2 lg:grid-cols-3">
-                        {[1, 2, 3].map(
-                            (item) => (
-                                <div
-                                    key={item}
-                                    className="h-64 rounded-3xl bg-zinc-200"
-                                />
-                            ),
-                        )}
-                    </div>
-                </div>
-            </main>
-        );
-    }
-
-    if (error) {
-        return (
-            <main className="flex min-h-screen items-center justify-center bg-zinc-50">
-                <p className="text-red-500">
-                    {error}
-                </p>
-            </main>
-        );
-    }
+    useEffect(() => {
+        void loadCourses();
+    }, [loadCourses]);
 
     return (
         <ProtectedRoute>
             <main className="min-h-screen bg-zinc-50">
-                <header className="border-b border-zinc-200 bg-white">
-                    <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-6">
-                        <Link
-                            href="/dashboard"
-                            className="font-bold"
-                        >
-                            LearnLanguage
-                        </Link>
-
-                        <Link
-                            href="/dashboard"
-                            className="text-sm text-zinc-500 hover:text-zinc-900"
-                        >
-                            Dashboard
-                        </Link>
-                    </div>
-                </header>
-
                 <div className="mx-auto max-w-6xl px-6 py-10">
-                    <h1 className="text-4xl font-bold">
-                        Explore courses
-                    </h1>
+                    <div>
+                        <p className="text-sm font-medium uppercase tracking-wider text-zinc-400">
+                            Learn
+                        </p>
 
-                    <p className="mt-2 text-zinc-500">
-                        Choose a language and start
-                        learning.
-                    </p>
+                        <h1 className="mt-2 text-4xl font-bold tracking-tight text-zinc-900">
+                            Courses
+                        </h1>
 
-                    {courses.length === 0 ? (
-                        <div className="mt-10 rounded-3xl border border-zinc-200 bg-white p-10 text-center">
-                            <p className="text-zinc-500">
-                                No courses are available
-                                yet.
-                            </p>
-                        </div>
-                    ) : (
-                        <div className="mt-10 grid gap-5 md:grid-cols-2 lg:grid-cols-3">
-                            {courses.map(
-                                (course) => {
-                                    const enrolled =
-                                        enrolledIds.has(
-                                            course.id,
-                                        );
+                        <p className="mt-3 max-w-2xl text-zinc-500">
+                            Choose a course and
+                            continue building your
+                            language skills.
+                        </p>
+                    </div>
 
-                                    return (
-                                        <div
-                                            key={
-                                                course.id
-                                            }
-                                            className="rounded-3xl border border-zinc-200 bg-white p-6 shadow-sm"
-                                        >
-                                            <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-zinc-900 text-xl font-bold text-white">
-                                                {course.title
-                                                    .charAt(
-                                                        0,
-                                                    )
-                                                    .toUpperCase()}
-                                            </div>
-
-                                            <h2 className="mt-6 text-xl font-bold">
-                                                {
-                                                    course.title
-                                                }
-                                            </h2>
-
-                                            {course.level && (
-                                                <span className="mt-3 inline-block rounded-full bg-zinc-100 px-3 py-1 text-xs font-semibold uppercase text-zinc-500">
-                                                {
-                                                    course.level
-                                                }
-                                            </span>
-                                            )}
-
-                                            {course.description && (
-                                                <p className="mt-4 line-clamp-3 text-sm leading-6 text-zinc-500">
-                                                    {
-                                                        course.description
-                                                    }
-                                                </p>
-                                            )}
-
-                                            <div className="mt-7 flex gap-3">
-                                                {enrolled ? (
-                                                    <Link
-                                                        href={`/courses/${course.id}`}
-                                                        className="flex-1 rounded-xl bg-zinc-900 px-4 py-3 text-center text-sm font-semibold text-white"
-                                                    >
-                                                        Continue
-                                                    </Link>
-                                                ) : (
-                                                    <button
-                                                        type="button"
-                                                        onClick={() =>
-                                                            enroll(
-                                                                course.id,
-                                                            )
-                                                        }
-                                                        disabled={
-                                                            enrolling ===
-                                                            course.id
-                                                        }
-                                                        className="flex-1 rounded-xl bg-zinc-900 px-4 py-3 text-sm font-semibold text-white disabled:opacity-50"
-                                                    >
-                                                        {enrolling ===
-                                                        course.id
-                                                            ? "Enrolling..."
-                                                            : "Enroll"}
-                                                    </button>
-                                                )}
-                                            </div>
-                                        </div>
-                                    );
-                                },
+                    {loading && (
+                        <div className="mt-10 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+                            {Array.from({
+                                length: 6,
+                            }).map(
+                                (_, index) => (
+                                    <div
+                                        key={
+                                            index
+                                        }
+                                        className="h-64 animate-pulse rounded-3xl bg-zinc-200"
+                                    />
+                                ),
                             )}
                         </div>
                     )}
+
+                    {!loading &&
+                        error && (
+                            <div className="mt-10 rounded-3xl border border-red-200 bg-white p-8">
+                                <p className="text-sm text-red-600">
+                                    {error}
+                                </p>
+
+                                <button
+                                    type="button"
+                                    onClick={() =>
+                                        void loadCourses()
+                                    }
+                                    className="mt-5 rounded-2xl bg-zinc-900 px-5 py-3 text-sm font-semibold text-white"
+                                >
+                                    Try again
+                                </button>
+                            </div>
+                        )}
+
+                    {!loading &&
+                        !error &&
+                        courses.length ===
+                        0 && (
+                            <div className="mt-10 rounded-3xl border border-zinc-200 bg-white p-12 text-center">
+                                <h2 className="text-xl font-bold text-zinc-900">
+                                    No courses yet
+                                </h2>
+
+                                <p className="mt-2 text-sm text-zinc-500">
+                                    Courses will
+                                    appear here once
+                                    they are
+                                    published.
+                                </p>
+                            </div>
+                        )}
+
+                    {!loading &&
+                        !error &&
+                        courses.length >
+                        0 && (
+                            <div className="mt-10 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+                                {courses.map(
+                                    (
+                                        course,
+                                    ) => (
+                                        <Link
+                                            key={
+                                                course.id
+                                            }
+                                            href={`/courses/${course.id}`}
+                                            className="group overflow-hidden rounded-3xl border border-zinc-200 bg-white transition hover:-translate-y-1 hover:border-zinc-300 hover:shadow-lg"
+                                        >
+                                            <div className="h-32 bg-zinc-900 p-6">
+                                                <span className="inline-flex rounded-full bg-white/10 px-3 py-1 text-xs font-medium text-white">
+                                                    Course
+                                                </span>
+                                            </div>
+
+                                            <div className="p-6">
+                                                <h2 className="text-xl font-bold text-zinc-900">
+                                                    {
+                                                        course.title
+                                                    }
+                                                </h2>
+
+                                                {course.description && (
+                                                    <p className="mt-3 line-clamp-3 text-sm leading-6 text-zinc-500">
+                                                        {
+                                                            course.description
+                                                        }
+                                                    </p>
+                                                )}
+
+                                                <div className="mt-6 flex items-center justify-between">
+                                                    <span className="text-sm font-semibold text-zinc-900">
+                                                        Start learning
+                                                    </span>
+
+                                                    <span className="text-zinc-400 transition group-hover:translate-x-1 group-hover:text-zinc-900">
+                                                        →
+                                                    </span>
+                                                </div>
+                                            </div>
+                                        </Link>
+                                    ),
+                                )}
+                            </div>
+                        )}
                 </div>
             </main>
         </ProtectedRoute>
-
     );
 }
